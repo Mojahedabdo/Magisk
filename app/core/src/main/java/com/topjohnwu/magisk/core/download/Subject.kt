@@ -7,11 +7,10 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Parcelable
 import androidx.core.net.toUri
-import com.topjohnwu.magisk.core.Info
 import com.topjohnwu.magisk.core.model.UpdateInfo
 import com.topjohnwu.magisk.core.model.module.OnlineModule
 import com.topjohnwu.magisk.core.utils.MediaStoreUtils
-import com.topjohnwu.magisk.view.Notifications
+import com.topjohnwu.magisk.view.NotificationCenter
 import kotlinx.parcelize.IgnoredOnParcel
 import kotlinx.parcelize.Parcelize
 import java.io.File
@@ -38,9 +37,10 @@ abstract class Subject : Parcelable {
 
     @Parcelize
     class App(
-        private val json: UpdateInfo = Info.update,
-        override val notifyId: Int = Notifications.nextId()
+        private val json: UpdateInfo,
+        override val notifyId: Int = NotificationCenter.nextDynamicId()
     ) : Subject() {
+        val expectedMbeVersionCode: Int get() = json.versionCode
         override val title: String get() = "Magisk-${json.version}(${json.versionCode})"
         override val url: String get() = json.link
 
@@ -56,7 +56,7 @@ abstract class Subject : Parcelable {
 
     @Parcelize
     class Test(
-        override val notifyId: Int = Notifications.nextId(),
+        override val notifyId: Int = NotificationCenter.nextDynamicId(),
         override val title: String = UUID.randomUUID().toString().substring(0, 6)
     ) : Subject() {
         override val url get() = "https://link.testfile.org/250MB"

@@ -1,15 +1,13 @@
 package com.topjohnwu.magisk.core.model.module
 
-import com.squareup.moshi.JsonDataException
 import com.topjohnwu.magisk.core.Const
 import com.topjohnwu.magisk.core.di.ServiceLocator
+import com.topjohnwu.magisk.core.model.ModuleJson
 import com.topjohnwu.magisk.core.utils.RootUtils
 import com.topjohnwu.superuser.Shell
 import com.topjohnwu.superuser.nio.ExtendedFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import timber.log.Timber
-import java.io.IOException
 import java.util.Locale
 
 data class LocalModule(
@@ -23,9 +21,8 @@ data class LocalModule(
     override var versionCode: Int = -1
     var author: String = ""
     var description: String = ""
-    var updateInfo: OnlineModule? = null
-    var outdated = false
-    private var updateUrl: String = ""
+    internal var updateSource: String = ""
+        private set
 
     private val removeFile = base.getChildFile("remove")
     private val disableFile = base.getChildFile("disable")
@@ -82,7 +79,7 @@ data class LocalModule(
                 "versionCode" -> versionCode = value.toInt()
                 "author" -> author = value
                 "description" -> description = value
-                "updateJson" -> updateUrl = value
+                "updateJson" -> updateSource = value
             }
         }
     }
@@ -101,22 +98,14 @@ data class LocalModule(
         }
     }
 
-    suspend fun fetch(): Boolean {
-        if (updateUrl.isEmpty())
-            return false
+    internal val hasUpdateSource: Boolean get() = updateSource.isNotBlank()
 
-        try {
-            val json = svc.fetchModuleJson(updateUrl)
-            updateInfo = OnlineModule(this, json)
-            outdated = json.versionCode > versionCode
-            return true
-        } catch (e: IOException) {
-            Timber.w(e)
-        } catch (e: JsonDataException) {
-            Timber.w(e)
-        }
+    internal suspend fun fetchUpdateMetadata(): ModuleJson {
+        return svc.fetchModuleJson(updateSource)
+    }
 
-        return false
+    internal suspend fun fetchUpdateChangelog(url: String): String {
+        return svc.fetchString(url)
     }
 
     companion object {
@@ -124,12 +113,12 @@ data class LocalModule(
         fun loaded() = RootUtils.fs.getFile(Const.MODULE_PATH).exists()
 
         suspend fun installed() = withContext(Dispatchers.IO) {
-            RootUtils.fs.getFile(Const.MODULE_PATH)
+            val localFiles = RootUtils.fs.getFile(Const.MODULE_PATH)
                 .listFiles()
                 .orEmpty()
                 .filter { !it.isFile && !it.isHidden }
-                .map { LocalModule(it) }
-                .sortedBy { it.name.lowercase(Locale.ROOT) }
+            val localModules = localFiles.map { LocalModule(it) }
+            localModules.sortedBy { it.name.lowercase(Locale.ROOT) }
         }
     }
 }

@@ -1,0 +1,342 @@
+name: Release Bot
+run-name: Release ${{ inputs.native_release_id || 'latest valid native binaries' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      native_release_id:
+        description: "Release under prebuilt/native/releases; empty selects the unique highest valid manifest versionCode"
+        required: false
+        default: ""
+      release_suffix:
+        description: "MBE suffix appended to the Magisk alpha version (empty for auto-increment)"
+        required: false
+        default: ""
+      version_code_offset:
+        description: "Optional exact MBE versionCode; it must be newer than the central deploy manifest"
+        required: false
+        default: ""
+      release_tag:
+        description: "APK release tag. Empty means v<version>"
+        required: false
+        default: ""
+      changelog:
+        description: "Changelog file used for release notes"
+        required: true
+        default: "docs/app_changes.md"
+      publish:
+        description: "Create/update the GitHub release"
+        type: boolean
+        required: true
+        default: true
+      prerelease:
+        description: "Mark GitHub release as prerelease"
+        type: boolean
+        required: true
+        default: true
+permissions:
+  contents: write
+
+concurrency:
+  group: release-bot-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  AUTHORIZED_RELEASE_REF: refs/heads/master
+
+jobs:
+  release:
+    name: Build and publish APK
+    runs-on: self-hosted
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+        with:
+          submodules: "recursive"
+
+      - name: Verify clean source checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain)"
+
+      - name: Validate authorized release ref
+        if: ${{ inputs.publish }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "$AUTHORIZED_RELEASE_REF" ]]; then
+            echo "Publishing is allowed only from $AUTHORIZED_RELEASE_REF; got $GITHUB_REF" >&2
+            exit 1
+          fi
+
+      - name: Validate publishing credentials
+        if: ${{ inputs.publish }}
+        env:
+          DEPLOY_REPO_TOKEN: ${{ secrets.DEPLOY_REPO_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$DEPLOY_REPO_TOKEN" || -z "$TELEGRAM_BOT_TOKEN" || -z "$TELEGRAM_CHAT_ID" ]]; then
+            echo "DEPLOY_REPO_TOKEN, TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required." >&2
+            exit 1
+          fi
+
+      - name: Check out the authoritative deployment manifest
+        uses: actions/checkout@v6
+        with:
+          repository: Anto426/Magisk-deploy
+          ref: main
+          token: ${{ secrets.DEPLOY_REPO_TOKEN || github.token }}
+          path: upstream
+
+      - name: Setup environment
+        uses: ./.github/actions/setup
+        with:
+          is-asset-build: true
+
+      - name: Prepare native binaries
+        id: prepare
+        run: |
+          mkdir -p release-bot
+          python scripts/release_bot.py prepare \
+            --native-release-id "${{ inputs.native_release_id || '' }}" \
+            --release-suffix "${{ inputs.release_suffix || '' }}" \
+            --version-code-offset "${{ inputs.version_code_offset || '' }}" \
+            --published-manifest upstream/update.json \
+            --release-key "${{ github.run_id }}"
+
+      - name: Decode keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" || -z "$KEY_ALIAS" || -z "$KEY_PASSWORD" ]]; then
+            echo "All release signing secrets are required." >&2
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 --decode > release-key.jks
+          echo "KEYSTORE_FILE=release-key.jks" >> "$GITHUB_ENV"
+
+      - name: Run update tests and release lint
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./app/gradlew -p app :core:testDebugUnitTest :apk:lintRelease
+
+      - name: Build release APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./build.py -vr app
+
+      - name: Package release files
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.prepare.outputs.version }}"
+          tag="${{ inputs.release_tag || '' }}"
+          if [[ -z "$tag" ]]; then
+            tag="v${version}"
+          fi
+          apk_asset="Magisk-v${version}.apk"
+          cp out/app-release.apk "release-bot/${apk_asset}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "apk_asset=${apk_asset}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release metadata
+        id: notes
+        run: |
+          python scripts/release_bot.py notes \
+            --metadata "${{ steps.prepare.outputs.metadata }}" \
+            --repo "${{ github.repository }}" \
+            --tag "${{ steps.package.outputs.tag }}" \
+            --apk-asset "${{ steps.package.outputs.apk_asset }}" \
+            --changelog "${{ inputs.changelog || 'docs/app_changes.md' }}" \
+            --out-dir release-bot
+
+      - name: Upload runner artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-bot-${{ steps.package.outputs.tag }}
+          path: release-bot
+          compression-level: 9
+          overwrite: true
+
+      - name: Create or update GitHub release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.package.outputs.tag }}"
+          args=(release-bot/release.md release-bot/update.json release-bot/telegram.md "release-bot/${{ steps.package.outputs.apk_asset }}")
+          release_photo="${{ steps.notes.outputs.release_photo }}"
+          if [[ -n "$release_photo" ]]; then
+            args+=("$release_photo")
+          fi
+          release_flags=()
+          if [[ "${{ inputs.prerelease }}" == "true" ]]; then
+            release_flags+=(--prerelease)
+          else
+            release_flags+=(--latest)
+          fi
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release edit "$tag" \
+              --repo "${{ github.repository }}" \
+              --title "${{ steps.notes.outputs.title }}" \
+              --notes-file release-bot/release.md \
+              "${release_flags[@]}"
+            gh release upload "$tag" "${args[@]}" --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "$tag" "${args[@]}" \
+              --repo "${{ github.repository }}" \
+              --title "${{ steps.notes.outputs.title }}" \
+              --notes-file release-bot/release.md \
+              "${release_flags[@]}"
+          fi
+
+      - name: Update the static upstream repository
+        if: ${{ inputs.publish }}
+        id: upstream
+        env:
+          DEPLOY_REPO_TOKEN: ${{ secrets.DEPLOY_REPO_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$DEPLOY_REPO_TOKEN" ]]; then
+            echo "DEPLOY_REPO_TOKEN is required to update the upstream repository." >&2
+            exit 1
+          fi
+          while IFS= read -r -d '' tracked; do
+            if [[ "$tracked" != "update.json" ]]; then
+              git -C upstream rm -r --ignore-unmatch -- "$tracked"
+            fi
+          done < <(git -C upstream ls-files -z)
+          python scripts/release_bot.py upstream \
+            --metadata "${{ steps.prepare.outputs.metadata }}" \
+            --upstream-dir upstream \
+            --release-repo "${{ github.repository }}" \
+            --tag "${{ steps.package.outputs.tag }}" \
+            --apk-asset "${{ steps.package.outputs.apk_asset }}" \
+            --legacy-manifest update.json
+          git -C upstream add -A -- update.json
+          tracked="$(git -C upstream ls-files)"
+          if [[ "$tracked" != "update.json" ]]; then
+            echo "Deploy repository must track update.json only; found: $tracked" >&2
+            exit 1
+          fi
+          unexpected="$(find upstream -mindepth 1 -maxdepth 1 ! -name .git ! -name update.json -print -quit)"
+          if [[ -n "$unexpected" ]]; then
+            echo "Deploy checkout contains an unexpected entry: $unexpected" >&2
+            exit 1
+          fi
+          if [[ -z "$(git -C upstream status --porcelain)" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git -C upstream config user.name "Magisk Release Bot"
+          git -C upstream config user.email "actions@github.com"
+          git -C upstream commit -m "deploy: ${{ steps.package.outputs.tag }}"
+          git -C upstream push
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Warn about incomplete Telegram delivery
+        if: ${{ inputs.publish && steps.upstream.outputs.telegram_incomplete == 'true' }}
+        shell: bash
+        run: |
+          echo "::warning title=Telegram delivery requires manual recovery::This release was claimed by an earlier run, but successful delivery was not recorded. Automatic retry is disabled to prevent duplicates; verify Telegram and recover manually."
+
+      - name: Claim Telegram delivery
+        if: ${{ inputs.publish && steps.upstream.outputs.telegram_required == 'true' }}
+        id: telegram_claim
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release_bot.py claim-telegram \
+            --upstream-dir upstream \
+            --release-key "${{ github.run_id }}"
+          git -C upstream add -- update.json
+          if git -C upstream diff --cached --quiet; then
+            echo "Telegram claim was not newly persisted; refusing to send." >&2
+            exit 1
+          fi
+          git -C upstream config user.name "Magisk Release Bot"
+          git -C upstream config user.email "actions@github.com"
+          git -C upstream commit -m "deploy: claim Telegram delivery for ${{ steps.package.outputs.tag }}"
+          git -C upstream push
+
+      - name: Notify Telegram
+        if: ${{ inputs.publish && steps.upstream.outputs.telegram_required == 'true' }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release_bot.py telegram \
+            --message release-bot/telegram.md \
+            --photo "${{ steps.notes.outputs.release_photo }}"
+
+      - name: Record Telegram delivery
+        if: ${{ inputs.publish && steps.upstream.outputs.telegram_required == 'true' }}
+        id: telegram_delivery
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release_bot.py mark-notified \
+            --upstream-dir upstream \
+            --release-key "${{ github.run_id }}"
+          git -C upstream add -- update.json
+          if git -C upstream diff --cached --quiet; then
+            exit 0
+          fi
+          git -C upstream config user.name "Magisk Release Bot"
+          git -C upstream config user.email "actions@github.com"
+          git -C upstream commit -m "deploy: record Telegram delivery for ${{ steps.package.outputs.tag }}"
+          git -C upstream push
+
+      - name: Check out compatibility manifest branch
+        if: ${{ inputs.publish }}
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository }}
+          ref: master
+          token: ${{ github.token }}
+          path: compatibility
+
+      - name: Publish compatibility manifest for installed clients
+        if: ${{ inputs.publish }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp update.json compatibility/update.json
+          git -C compatibility config user.name "Magisk Release Bot"
+          git -C compatibility config user.email "actions@github.com"
+          git -C compatibility add -- update.json
+          if git -C compatibility diff --cached --quiet; then
+            exit 0
+          fi
+          git -C compatibility commit -m "deploy: update client compatibility manifest"
+          git -C compatibility push origin HEAD:master
+
+      - name: Clean sensitive files
+        if: always()
+        continue-on-error: true
+        run: |
+          rm -f release-key.jks
+
+      - name: Stop gradle daemon
+        if: always()
+        continue-on-error: true
+        run: ./app/gradlew --stop

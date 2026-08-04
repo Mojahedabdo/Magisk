@@ -75,14 +75,14 @@ impl MagiskD {
         let tmp_bb = buf.append_path(get_magisk_tmp()).append_path(BBPATH);
         tmp_bb.mkdirs(0o755).ok();
         tmp_bb.append_path("busybox");
-        tmp_bb.follow_link().chmod(0o755).log_ok();
         busybox.copy_to(tmp_bb).ok();
+        tmp_bb.follow_link().chmod(0o755).log_ok();
 
         // Install busybox applets
         Command::new(&tmp_bb)
             .arg("--install")
             .arg("-s")
-            .arg(tmp_bb.parent_dir().unwrap())
+            .arg(tmp_bb.parent_dir().unwrap_or_default())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -185,12 +185,14 @@ impl MagiskD {
 
         setup_preinit_dir();
         self.ensure_manager();
-        self.zygisk.lock().unwrap().reset(true);
+        if self.zygisk_enabled.load(Ordering::Relaxed) {
+            self.zygisk.lock().reset(true);
+        }
     }
 
     pub fn boot_stage_handler(&self, client: UnixStream, code: RequestCode) {
         // Make sure boot stage execution is always serialized
-        let mut state = self.boot_stage_lock.lock().unwrap();
+        let mut state = self.boot_stage_lock.lock();
 
         match code {
             RequestCode::POST_FS_DATA => {

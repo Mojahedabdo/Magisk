@@ -1,29 +1,23 @@
 plugins {
-    id("com.android.application")
-    kotlin("android")
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.compose.compiler)
     kotlin("plugin.parcelize")
-    kotlin("kapt")
-    id("androidx.navigation.safeargs.kotlin")
 }
 
 setupMainApk()
 
-kapt {
-    correctErrorTypes = true
-    useBuildCache = true
-    mapDiagnosticLocations = true
-    javacOptions {
-        option("-Xmaxerrs", "1000")
-    }
-}
-
 android {
     buildFeatures {
-        dataBinding = true
+        compose = true
     }
 
     compileOptions {
         isCoreLibraryDesugaringEnabled = true
+    }
+
+    defaultConfig {
+        proguardFile("proguard-rules.pro")
+        manifestPlaceholders["mbeVersionCode"] = Config.mbeVersionCode.toString()
     }
 
     buildTypes {
@@ -38,22 +32,26 @@ dependencies {
     implementation(project(":core"))
     coreLibraryDesugaring(libs.jdk.libs)
 
-    implementation(libs.indeterminate.checkbox)
-    implementation(libs.rikka.layoutinflater)
-    implementation(libs.rikka.insets)
-    implementation(libs.rikka.recyclerview)
+    // Compose
+    implementation(libs.activity.compose)
+    implementation(libs.compose.material.icons.extended)
+    implementation(libs.compose.material3)
+    implementation(libs.compose.ui)
+    implementation(libs.compose.ui.tooling.preview)
+    implementation(libs.foundation)
+    implementation(libs.iconsax.compose)
+    implementation(libs.lifecycle.runtime.compose)
+    implementation(libs.lifecycle.viewmodel.compose)
+    debugImplementation(libs.compose.ui.tooling)
 
-    implementation(libs.navigation.fragment.ktx)
-    implementation(libs.navigation.ui.ktx)
+    // Navigation
+    implementation(libs.navigation.compose)
 
-    implementation(libs.constraintlayout)
-    implementation(libs.swiperefreshlayout)
-    implementation(libs.recyclerview)
-    implementation(libs.transition)
-    implementation(libs.fragment.ktx)
-    implementation(libs.appcompat)
-    implementation(libs.material)
+    // Images
+    implementation(libs.coil.compose)
+    implementation(libs.coil.svg)
 
-    // Make sure kapt runs with a proper kotlin-stdlib
-    kapt(kotlin("stdlib"))
+    // Network
+    implementation(libs.retrofit)
+    implementation(libs.retrofit.moshi)
 }

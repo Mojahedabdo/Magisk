@@ -4,10 +4,9 @@ set -e
 shopt -s extglob
 . scripts/test_common.sh
 
-emu_args_base="-no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -read-only -no-snapshot -cores $core_count"
+emu_args_base="-no-window -no-audio -no-boot-anim -gpu software -read-only -no-snapshot -cores $core_count"
 log_args="-show-kernel -logcat '' -logcat-output logcat.log"
 emu_args=
-emu_pid=
 
 atd_min_api=30
 atd_max_api=36
@@ -32,17 +31,17 @@ case $(uname -m) in
 esac
 
 cleanup() {
-  pkill -INT -P $$
-  wait
-  trap - EXIT
-  rm -f magisk_*.img
-  "$avd" delete avd -n test
-  exit 1
+  rm -f magisk-*.img
+  "$avd" delete avd -n test > /dev/null 2>&1
 }
 
 test_error() {
+  trap - EXIT
   print_error "! An error occurred"
+  pkill -INT -P $$
+  wait
   cleanup
+  exit 1
 }
 
 wait_for_boot() {
@@ -59,38 +58,57 @@ wait_for_boot() {
   done
 }
 
-wait_emu() {
-  local which_pid
-
-  timeout $boot_timeout bash -c wait_for_boot &
-  local wait_pid=$!
-
-  # Handle the case when emulator dies earlier than timeout
-  wait -p which_pid -n $emu_pid $wait_pid
-  [ $which_pid -eq $wait_pid ]
-}
-
 dump_vars() {
   local val
   for name in $@; do
     eval val=\$$name
-    echo $name=\"$val\"\;
+    echo local $name=\"$val\"\;
   done
 }
 
-resolve_vars() {
-  local arg_list="$1"
-  local ver=$2
-  local type=$3
+parse_args() {
+  set +x
+  local return_vals="$1"
+  shift
+
+  local ver=
+  local type=
+
+  while getopts ":v:t:l" opt; do
+    case $opt in
+      v )
+        ver="$OPTARG"
+        ;;
+      t )
+        type="$OPTARG"
+        ;;
+      l )
+        export AVD_TEST_LOG=1
+        ;;
+      \? )
+        echo "Error: Invalid option: -$OPTARG" 1>&2
+        exit 1
+        ;;
+      : )
+        # Missing a required argument is fine as we perform validations later
+        ;;
+    esac
+  done
+
+  if [ -z $ver ]; then
+    print_error "! No system image version specified"
+    exit 1
+  fi
 
   # Determine API level
   local api
   case $ver in
-    +([0-9])) api=$ver ;;
+    +([0-9\.])) api=$ver ;;
     TiramisuPrivacySandbox) api=33 ;;
     UpsideDownCakePrivacySandbox) api=34 ;;
     VanillaIceCream) api=35 ;;
     Baklava) api=36 ;;
+    CinnamonBun) api=37 ;;
     *CANARY) api=10000 ;;
     *)
       print_error "! Unknown system image version '$ver'"
@@ -100,10 +118,10 @@ resolve_vars() {
 
   # Determine default image type
   if [ -z $type ]; then
-    if [ $api -ge $atd_min_api -a $api -le $atd_max_api ]; then
+    if [ $(bc <<< "$api >= $atd_min_api && $api <= $atd_max_api") = 1 ]; then
       # Use the lightweight ATD images if possible
       type='aosp_atd'
-    elif [ $api -gt $atd_max_api ]; then
+    elif [ $(bc <<< "$api > $atd_max_api") = 1 ]; then
       # Preview/beta release, no AOSP version available
       type='google_apis'
     else
@@ -113,7 +131,7 @@ resolve_vars() {
 
   # Old Linux kernels will not boot with memory larger than 3GB
   local memory
-  if [ $api -lt $huge_ram_min_api ]; then
+  if [ $(bc <<< "$api < $huge_ram_min_api") = 1 ]; then
     memory=3072
   else
     memory=8192
@@ -126,26 +144,37 @@ resolve_vars() {
   local sys_img_dir="$ANDROID_HOME/system-images/android-$ver/$type/$arch"
   local ramdisk="$sys_img_dir/ramdisk.img"
 
-  # Dump variables to output
-  dump_vars $arg_list
+  # Dump global variables
+  echo emu_args=\"$emu_args\"
+  echo OPTIND=$OPTIND
+
+  # Dump local variables
+  dump_vars $return_vals
 }
 
 dl_emu() {
   local avd_pkg=$1
   yes | "$sdk" --licenses > /dev/null 2>&1
-  "$sdk" --channel=3 platform-tools emulator $avd_pkg
+  "$sdk" --channel=3 'cmdline-tools;latest' platform-tools emulator "$avd_pkg"
+  # It's possible cmdline-tools updated
+  if [ -e "${cli_tools}-2" ]; then
+    rm -rf "$cli_tools"
+    mv "${cli_tools}-2" "$cli_tools"
+  fi
 }
 
 setup_emu() {
   local avd_pkg=$1
+  local ver=$2
   dl_emu $avd_pkg
   echo no | "$avd" create avd -f -n test -k $avd_pkg
 }
 
 test_emu() {
-  local variant=$1
+  local apk=$1
+  local image=$2
 
-  local magisk_args="-ramdisk magisk_${variant}.img -feature -SystemAsRoot"
+  local magisk_args="-ramdisk $image -feature -SystemAsRoot"
 
   if [ -n "$AVD_TEST_LOG" ]; then
     rm -f logcat.log
@@ -153,31 +182,34 @@ test_emu() {
   else
     "$emu" @test $emu_args $magisk_args > /dev/null 2>&1 &
   fi
+  timeout $boot_timeout bash -c wait_for_boot
 
-  emu_pid=$!
-  wait_emu
-
-  run_setup $variant
+  run_setup $apk
 
   adb reboot
-  wait_emu
+  timeout $boot_timeout bash -c wait_for_boot
 
   run_tests
 
-  kill -INT $emu_pid
-  wait $emu_pid
+  adb emu kill
+  wait
 }
 
 test_main() {
-  local avd_pkg ramdisk
-  eval $(resolve_vars "emu_args avd_pkg ramdisk" $1 $2)
+  local vars
+  vars=$(parse_args "ver avd_pkg ramdisk" "$@")
+  eval "$vars"
+
+  # Shift off the options we just parsed so that "$@" only contains the remaining positional arguments
+  shift $((OPTIND - 1))
+  local apks=($(print_apks "$@"))
 
   # Specify an explicit port so that tests can run with other emulators running at the same time
   local emu_port=5682
   emu_args="$emu_args -port $emu_port"
   export ANDROID_SERIAL="emulator-$emu_port"
 
-  setup_emu "$avd_pkg"
+  setup_emu "$avd_pkg" $ver
 
   # Restart ADB daemon just in case
   adb kill-server
@@ -185,47 +217,44 @@ test_main() {
 
   # Launch stock emulator
   print_title "* Launching $avd_pkg"
-  "$emu" @test $emu_args >/dev/null 2>&1 &
-  emu_pid=$!
-  wait_emu
+  "$emu" @test $emu_args > /dev/null 2>&1 &
+  timeout $boot_timeout bash -c wait_for_boot
 
   # Patch images
-  if [ -z "$AVD_TEST_SKIP_DEBUG" ]; then
-    ./build.py -v avd_patch "$ramdisk" magisk_debug.img
-  fi
-  if [ -z "$AVD_TEST_SKIP_RELEASE" ]; then
-    ./build.py -vr avd_patch "$ramdisk" magisk_release.img
-  fi
+  local images=()
+  for apk in "${apks[@]}"; do
+    images+=("magisk-$(basename $apk .apk).img")
+    ./build.py -v avd_patch --apk "$apk" "$ramdisk" "${images[-1]}"
+  done
 
-  kill -INT $emu_pid
-  wait $emu_pid
+  adb emu kill
+  wait
 
-  if [ -z "$AVD_TEST_SKIP_DEBUG" ]; then
-    print_title "* Testing $avd_pkg (debug)"
-    test_emu debug
-  fi
+  for i in "${!apks[@]}"; do
+    print_title "* Testing $avd_pkg ($(basename ${apks[i]}))"
+    test_emu ${apks[i]} ${images[i]}
+  done
 
-  if [ -z "$AVD_TEST_SKIP_RELEASE" ]; then
-    print_title "* Testing $avd_pkg (release)"
-    test_emu release
-  fi
-
-  # Cleanup
-  rm -f magisk_*.img
-  "$avd" delete avd -n test
+  cleanup
 }
 
 run_main() {
-  local avd_pkg
-  eval $(resolve_vars "emu_args avd_pkg" $1 $2)
-  setup_emu "$avd_pkg"
+  local vars
+  vars=$(parse_args "ver avd_pkg" "$@")
+  eval "$vars"
+
+  setup_emu "$avd_pkg" $ver
   print_title "* Launching $avd_pkg"
-  "$emu" @test $emu_args 2>/dev/null
+  "$emu" @test $emu_args > /dev/null 2>&1 &
+  wait_for_boot
+  cleanup
 }
 
 dl_main() {
-  local avd_pkg
-  eval $(resolve_vars "avd_pkg" $1 $2)
+  local vars
+  vars=$(parse_args "avd_pkg" "$@")
+  eval "$vars"
+
   print_title "* Downloading $avd_pkg"
   dl_emu "$avd_pkg"
 }

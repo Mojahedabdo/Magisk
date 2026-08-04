@@ -16,6 +16,7 @@ import com.topjohnwu.magisk.StubApk
 import com.topjohnwu.magisk.core.base.UntrackedActivity
 import com.topjohnwu.magisk.core.utils.LocaleSetting
 import com.topjohnwu.magisk.core.utils.NetworkObserver
+import com.topjohnwu.magisk.view.NotificationCenter
 import com.topjohnwu.magisk.core.utils.RootUtils
 import com.topjohnwu.magisk.core.utils.ShellInit
 import com.topjohnwu.superuser.Shell
@@ -85,6 +86,8 @@ object AppContext : ContextWrapper(null),
             base.packageResourcePath
         }
         resources.patch()
+        NotificationCenter.setup()
+        JobService.schedule(this)
 
         val shellBuilder = Shell.Builder.create()
             .setFlags(Shell.FLAG_MOUNT_MASTER)
@@ -108,6 +111,7 @@ object AppContext : ContextWrapper(null),
         }
         networkObserver = NetworkObserver.init(this)
         if (!BuildConfig.DEBUG && !isRunningAsStub) {
+            @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
             GlobalScope.launch(Dispatchers.IO) {
                 ProfileInstaller.writeProfile(this@AppContext)
             }

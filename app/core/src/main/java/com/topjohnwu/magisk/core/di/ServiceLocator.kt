@@ -36,7 +36,6 @@ object ServiceLocator {
     val networkService by lazy {
         NetworkService(
             createApiService(retrofit, Const.Url.INVALID_URL),
-            createApiService(retrofit, Const.Url.GITHUB_API_URL),
         )
     }
 }
@@ -44,7 +43,7 @@ object ServiceLocator {
 private fun createSuLogDatabase(context: Context) =
     Room.databaseBuilder(context, SuLogDatabase::class.java, "sulogs.db")
         .addMigrations(SuLogDatabase.MIGRATION_1_2)
-        .fallbackToDestructiveMigration()
+        .fallbackToDestructiveMigration(true)
         .build()
 
 private fun createMarkwon(context: Context) =

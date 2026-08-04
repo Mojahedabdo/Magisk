@@ -40,9 +40,9 @@ object Const {
 
     object Url {
         const val PATREON_URL = "https://www.patreon.com/topjohnwu"
+        const val PAYPAL_URL = "https://www.paypal.me/topjohnwu"
         const val SOURCE_CODE_URL = "https://github.com/topjohnwu/Magisk"
 
-        const val GITHUB_API_URL = "https://api.github.com/"
         const val GITHUB_PAGE_URL = "https://topjohnwu.github.io/magisk-files/"
         const val INVALID_URL = "https://example.com/"
     }
@@ -55,7 +55,9 @@ object Const {
 
     object Value {
         const val FLASH_ZIP = "flash"
+        const val FLASH_MULTIPLE_ZIPS = "flash_multiple"
         const val PATCH_FILE = "patch"
+        const val DOWNLOAD = "download"
         const val FLASH_MAGISK = "magisk"
         const val FLASH_INACTIVE_SLOT = "slot"
         const val UNINSTALL = "uninstall"
@@ -66,5 +68,7 @@ object Const {
         const val SETTINGS = "settings"
         const val MODULES = "modules"
         const val SUPERUSER = "superuser"
+        const val APP_UPDATE = "app_update"
+        const val MODULE_UPDATES = "module_updates"
     }
 }

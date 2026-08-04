@@ -1,6 +1,6 @@
 plugins {
-    id("com.android.application")
-    id("org.lsposed.lsparanoid")
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.lsparanoid)
 }
 
 lsparanoid {
@@ -11,29 +11,21 @@ lsparanoid {
 
 android {
     namespace = "com.topjohnwu.magisk"
-
-    val canary = !Config.version.contains(".")
-    val base = "https://github.com/topjohnwu/Magisk/releases/download/"
-    val url = base + "v${Config.version}/Magisk-v${Config.version}.apk"
-    val canaryUrl = base + "canary-${Config.versionCode}/"
+    enableKotlin = false
 
     defaultConfig {
-        applicationId = "com.topjohnwu.magisk"
+        applicationId = Config.applicationId
         versionCode = 1
         versionName = "1.0"
-        buildConfigField("String", "APK_URL", "\"$url\"")
+        buildConfigField("String", "UPDATE_URL", "\"${Config.updateUrl}\"")
         buildConfigField("int", "STUB_VERSION", Config.stubVersion)
     }
 
     buildTypes {
         release {
-            if (canary) buildConfigField("String", "APK_URL", "\"${canaryUrl}app-release.apk\"")
             proguardFiles("proguard-rules.pro")
             isMinifyEnabled = true
-            isShrinkResources = false
-        }
-        debug {
-            if (canary) buildConfigField("String", "APK_URL", "\"${canaryUrl}app-debug.apk\"")
+            isShrinkResources = true
         }
     }
 

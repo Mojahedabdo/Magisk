@@ -4,9 +4,12 @@ import android.annotation.SuppressLint
 import android.app.LocaleConfig
 import android.app.LocaleManager
 import android.content.ContextWrapper
+import android.content.Intent
 import android.content.res.Resources
+import android.net.Uri
 import android.os.Build
 import android.os.LocaleList
+import android.provider.Settings
 import androidx.annotation.RequiresApi
 import com.topjohnwu.magisk.core.AppApkPath
 import com.topjohnwu.magisk.core.AppContext
@@ -20,6 +23,8 @@ import java.util.Locale
 interface LocaleSetting {
     // The locale that is manually overridden, null if system default
     val appLocale: Locale?
+    // The current device locale, independent from the app override
+    val systemLocale: Locale
     // The current active locale used in the application
     val currentLocale: Locale
 
@@ -27,11 +32,11 @@ interface LocaleSetting {
     fun updateResource(res: Resources)
 
     private class Api23Impl : LocaleSetting {
-
-        private val systemLocale: Locale = Locale.getDefault()
-
-        override var currentLocale: Locale = systemLocale
         override var appLocale: Locale? = null
+        override val systemLocale: Locale
+            @Suppress("DEPRECATION")
+            get() = Resources.getSystem().configuration.locale
+        override val currentLocale: Locale get() = appLocale ?: systemLocale
 
         init {
             setLocale(Config.locale)
@@ -40,9 +45,8 @@ interface LocaleSetting {
         override fun setLocale(tag: String) {
             val locale = when {
                 tag.isEmpty() -> null
-                else -> Locale.forLanguageTag(tag)
+                else -> Locale.forLanguageTag(normalizeLocaleTag(tag))
             }
-            currentLocale = locale ?: systemLocale
             appLocale = locale
             Locale.setDefault(currentLocale)
             updateResource(AppContext.resources)
@@ -59,11 +63,16 @@ interface LocaleSetting {
 
     @RequiresApi(24)
     private class Api24Impl : LocaleSetting {
+        private var appLocaleList: LocaleList? = null
+        private val systemLocaleList: LocaleList
+            get() = Resources.getSystem().configuration.locales
+        private val currentLocaleList: LocaleList
+            get() = appLocaleList ?: systemLocaleList
 
-        private val systemLocaleList = LocaleList.getDefault()
-        private var currentLocaleList: LocaleList = systemLocaleList
-
-        override var appLocale: Locale? = null
+        override val appLocale: Locale?
+            get() = appLocaleList?.takeUnless(LocaleList::isEmpty)?.get(0)
+        override val systemLocale: Locale
+            get() = systemLocaleList[0]
         override val currentLocale: Locale get() = currentLocaleList[0]
 
         init {
@@ -71,12 +80,10 @@ interface LocaleSetting {
         }
 
         override fun setLocale(tag: String) {
-            val localeList = when {
+            appLocaleList = when {
                 tag.isEmpty() -> null
-                else -> LocaleList.forLanguageTags(tag)
+                else -> LocaleList.forLanguageTags(normalizeLocaleTag(tag))
             }
-            currentLocaleList = localeList ?: systemLocaleList
-            appLocale = localeList?.get(0)
             LocaleList.setDefault(currentLocaleList)
             updateResource(AppContext.resources)
             AppContext.foregroundActivity?.relaunch()
@@ -98,11 +105,19 @@ interface LocaleSetting {
         override val appLocale: Locale?
             get() = lm.applicationLocales.let { if (it.isEmpty) null else it[0] }
 
-        override val currentLocale: Locale
-            get() = appLocale ?: lm.systemLocales[0]
+        override val systemLocale: Locale
+            get() = lm.systemLocales[0]
 
-        // These following methods should not be used
-        override fun setLocale(tag: String) {}
+        override val currentLocale: Locale
+            get() = appLocale ?: systemLocale
+
+        override fun setLocale(tag: String) {
+            lm.applicationLocales = when {
+                tag.isEmpty() -> LocaleList.getEmptyLocaleList()
+                else -> LocaleList.forLanguageTags(tag)
+            }
+        }
+
         override fun updateResource(res: Resources) {}
     }
 
@@ -120,7 +135,7 @@ interface LocaleSetting {
             names.add(AppContext.getString(R.string.system_default))
             tags.add("")
 
-            if (Build.VERSION.SDK_INT >= 34) {
+            if ((Build.VERSION.SDK_INT == 34 && !isRunningAsStub) || Build.VERSION.SDK_INT >= 35) {
                 // Use platform LocaleConfig parser
                 val config = localeConfig
                 val list = config.supportedLocales ?: LocaleList.getEmptyLocaleList()
@@ -138,7 +153,7 @@ interface LocaleSetting {
                     when (parser.next()) {
                         XmlPullParser.START_TAG -> {
                             if (parser.name == "locale") {
-                                val tag = parser.getAttributeValue(0)
+                                val tag = normalizeLocaleTag(parser.getAttributeValue(0))
                                 val locale = Locale.forLanguageTag(tag)
                                 names.add(locale.getDisplayName(locale))
                                 tags.add(tag)
@@ -164,9 +179,18 @@ interface LocaleSetting {
             LocaleConfig.fromContextIgnoringOverride(context)
         }
 
-        val useLocaleManager get() =
-            if (isRunningAsStub) Build.VERSION.SDK_INT >= 34
-            else Build.VERSION.SDK_INT >= 33
+        private val localeManagerUsable get() =
+            if (isRunningAsStub) Build.VERSION.SDK_INT >= 35 else Build.VERSION.SDK_INT >= 33
+
+        val useLocaleManager by lazy {
+            localeManagerUsable &&
+                    localeSettingsIntent.resolveActivity(AppContext.packageManager) != null
+        }
+
+        val localeSettingsIntent get() = Intent(
+            Settings.ACTION_APP_LOCALE_SETTINGS,
+            Uri.fromParts("package", AppContext.packageName, null),
+        )
 
         val instance: LocaleSetting by lazy {
             // Initialize available locale list
@@ -180,4 +204,8 @@ interface LocaleSetting {
             }
         }
     }
+}
+
+internal fun normalizeLocaleTag(tag: String): String {
+    return Locale.forLanguageTag(tag).toLanguageTag()
 }

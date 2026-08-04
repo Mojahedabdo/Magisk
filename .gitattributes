@@ -19,4 +19,11 @@ tools/elf-cleaner/** -binary
 *.apk binary
 *.png binary
 *.jpg binary
+*.gif binary
 *.ttf binary
+prebuilt/native/releases/**/busybox binary
+prebuilt/native/releases/**/init-ld binary
+prebuilt/native/releases/**/magisk binary
+prebuilt/native/releases/**/magiskboot binary
+prebuilt/native/releases/**/magiskinit binary
+prebuilt/native/releases/**/magiskpolicy binary

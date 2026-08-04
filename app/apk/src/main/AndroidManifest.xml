@@ -2,7 +2,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <application android:localeConfig="@xml/locale_config">
+    <application
+        android:enableOnBackInvokedCallback="true"
+        android:localeConfig="@xml/locale_config"
+        tools:replace="android:enableOnBackInvokedCallback">
+        <!-- Signed artifact identity used by the stub to reject mismatched/rollback updates. -->
+        <meta-data
+            android:name="com.topjohnwu.magisk.MBE_VERSION_CODE"
+            android:value="${mbeVersionCode}" />
+
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
@@ -22,6 +30,7 @@
             android:directBootAware="true"
             android:exported="false"
             android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
             tools:ignore="AppLinkUrlError">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

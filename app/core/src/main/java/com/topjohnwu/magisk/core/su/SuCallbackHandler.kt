@@ -3,6 +3,7 @@ package com.topjohnwu.magisk.core.su
 import android.content.Context
 import android.os.Bundle
 import android.widget.Toast
+import com.topjohnwu.magisk.core.AppContext
 import com.topjohnwu.magisk.core.BuildConfig
 import com.topjohnwu.magisk.core.Config
 import com.topjohnwu.magisk.core.R
@@ -12,6 +13,7 @@ import com.topjohnwu.magisk.core.ktx.getPackageInfo
 import com.topjohnwu.magisk.core.ktx.toast
 import com.topjohnwu.magisk.core.model.su.SuPolicy
 import com.topjohnwu.magisk.core.model.su.createSuLog
+import com.topjohnwu.magisk.view.NotificationCenter
 import kotlinx.coroutines.runBlocking
 import timber.log.Timber
 
@@ -69,10 +71,13 @@ object SuCallbackHandler {
             }
         }.getOrNull() ?: createSuLog(fromUid, toUid, pid, command, policy, target, seContext, gids)
 
+        runBlocking { ServiceLocator.logRepo.insert(log) }
+
+        // The native flag is the per-app "Notifications" policy. Honour it for
+        // both presentation modes; the global setting only selects toast vs bar.
         if (notify)
             notify(context, log.action >= SuPolicy.ALLOW, log.appName)
-
-        runBlocking { ServiceLocator.logRepo.insert(log) }
+        SuEvents.notifyLogUpdated()
     }
 
     private fun handleNotify(context: Context, data: Bundle) {
@@ -89,14 +94,22 @@ object SuCallbackHandler {
         notify(context, policy >= SuPolicy.ALLOW, appName)
     }
 
-    private fun notify(context: Context, granted: Boolean, appName: String) {
-        if (Config.suNotification == Config.Value.NOTIFICATION_TOAST) {
-            val resId = if (granted)
-                R.string.su_allow_toast
-            else
-                R.string.su_deny_toast
+    fun notify(granted: Boolean, appName: String) {
+        notify(AppContext, granted, appName)
+    }
 
-            context.toast(context.getString(resId, appName), Toast.LENGTH_SHORT)
+    private fun notify(context: Context, granted: Boolean, appName: String) {
+        when (Config.suNotification) {
+            Config.Value.NOTIFICATION_TOAST -> {
+                val resId = if (granted) R.string.su_allow_toast else R.string.su_deny_toast
+                context.toast(context.getString(resId, appName), Toast.LENGTH_SHORT)
+            }
+            Config.Value.NOTIFICATION_STATUS_BAR -> {
+                if (!NotificationCenter.showRootPermission(granted, appName)) {
+                    val resId = if (granted) R.string.su_allow_toast else R.string.su_deny_toast
+                    context.toast(context.getString(resId, appName), Toast.LENGTH_SHORT)
+                }
+            }
         }
     }
 }

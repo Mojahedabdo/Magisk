@@ -14,7 +14,7 @@
 
     <instrumentation
         android:name="com.topjohnwu.magisk.test.AppTestRunner"
-        android:targetPackage="com.topjohnwu.magisk" />
+        android:targetPackage="io.github.vvb2060.magisk" />
 
     <instrumentation
         android:name="com.topjohnwu.magisk.test.TestRunner"

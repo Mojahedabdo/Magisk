@@ -13,6 +13,7 @@ object Config : PreferenceConfig, DBConfig {
     override val stringDB get() = ServiceLocator.stringDB
     override val settingsDB get() = ServiceLocator.settingsDB
     override val context get() = ServiceLocator.deContext
+    @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
     override val coroutineScope get() = GlobalScope
 
     object Key {
@@ -38,34 +39,42 @@ object Config : PreferenceConfig, DBConfig {
         const val CUSTOM_CHANNEL = "custom_channel"
         const val LOCALE = "locale"
         const val DARK_THEME = "dark_theme_extended"
+        const val COLOR_MODE = "color_mode"
         const val DOWNLOAD_DIR = "download_dir"
         const val SAFETY = "safety_notice"
         const val THEME_ORDINAL = "theme_ordinal"
+        const val THEME_CUSTOM_LIGHT_PRIMARY = "theme_custom_light_primary"
+        const val THEME_CUSTOM_DARK_PRIMARY = "theme_custom_dark_primary"
+        const val THEME_CUSTOM_LIGHT_SECONDARY = "theme_custom_light_secondary"
+        const val THEME_CUSTOM_DARK_SECONDARY = "theme_custom_dark_secondary"
+        const val THEME_CUSTOM_LIGHT_SURFACE = "theme_custom_light_surface"
+        const val THEME_CUSTOM_DARK_SURFACE = "theme_custom_dark_surface"
+        const val THEME_CUSTOM_LIGHT_ON_SURFACE = "theme_custom_light_on_surface"
+        const val THEME_CUSTOM_DARK_ON_SURFACE = "theme_custom_dark_on_surface"
+        const val THEME_CUSTOM_LIGHT_ERROR = "theme_custom_light_error"
+        const val THEME_CUSTOM_DARK_ERROR = "theme_custom_dark_error"
         const val ASKED_HOME = "asked_home"
         const val DOH = "doh"
         const val RAND_NAME = "rand_name"
+        const val BOTTOM_BAR_STYLE = "bottom_bar_style"
+        const val BOTTOM_BAR_OPACITY = "bottom_bar_opacity"
+        const val LAST_APP_UPDATE_NOTIFICATION = "last_app_update_notification"
+        const val LAST_MODULE_UPDATE_NOTIFICATION = "last_module_update_notification"
 
         val NO_MIGRATION = setOf(ASKED_HOME, SU_REQUEST_TIMEOUT,
             SU_AUTO_RESPONSE, SU_REAUTH, SU_TAPJACK)
     }
 
-    object OldValue {
-        // Update channels
-        const val DEFAULT_CHANNEL = -1
-        const val STABLE_CHANNEL = 0
-        const val BETA_CHANNEL = 1
-        const val CUSTOM_CHANNEL = 2
-        const val CANARY_CHANNEL = 3
-        const val DEBUG_CHANNEL = 4
-    }
-
     object Value {
-        // Update channels
-        const val DEFAULT_CHANNEL = -1
-        const val STABLE_CHANNEL = 0
-        const val BETA_CHANNEL = 1
-        const val DEBUG_CHANNEL = 2
-        const val CUSTOM_CHANNEL = 3
+        // Theme mode
+        const val DARK_THEME_AMOLED = -2
+        const val BOTTOM_BAR_AUTO = 0
+        const val BOTTOM_BAR_FLOATING = 1
+        const val BOTTOM_BAR_FIXED = 2
+
+        // Update channel
+        const val MBE_CHANNEL = 0
+        const val CUSTOM_CHANNEL = 1
 
         // root access mode
         const val ROOT_ACCESS_DISABLED = 0
@@ -86,6 +95,7 @@ object Config : PreferenceConfig, DBConfig {
         // su notification
         const val NO_NOTIFICATION = 0
         const val NOTIFICATION_TOAST = 1
+        const val NOTIFICATION_STATUS_BAR = 2
 
         // su auto response
         const val SU_PROMPT = 0
@@ -106,15 +116,30 @@ object Config : PreferenceConfig, DBConfig {
 
     var safetyNotice by preference(Key.SAFETY, true)
     var darkTheme by preference(Key.DARK_THEME, -1)
-    var themeOrdinal by preference(Key.THEME_ORDINAL, 0)
+    var themeOrdinal by preference(Key.THEME_ORDINAL, -1)
+    var colorMode by preference(Key.COLOR_MODE, 0)
+    var themeCustomLightPrimary by preference(Key.THEME_CUSTOM_LIGHT_PRIMARY, 0xFF4EAFF5.toInt())
+    var themeCustomDarkPrimary by preference(Key.THEME_CUSTOM_DARK_PRIMARY, 0xFF4EAFF5.toInt())
+    var themeCustomLightSecondary by preference(Key.THEME_CUSTOM_LIGHT_SECONDARY, 0xFF3E78AF.toInt())
+    var themeCustomDarkSecondary by preference(Key.THEME_CUSTOM_DARK_SECONDARY, 0xFF3E78AF.toInt())
+    var themeCustomLightSurface by preference(Key.THEME_CUSTOM_LIGHT_SURFACE, 0xFFF9F9F9.toInt())
+    var themeCustomDarkSurface by preference(Key.THEME_CUSTOM_DARK_SURFACE, 0xFF0D0D0D.toInt())
+    var themeCustomLightOnSurface by preference(Key.THEME_CUSTOM_LIGHT_ON_SURFACE, 0xFF444444.toInt())
+    var themeCustomDarkOnSurface by preference(Key.THEME_CUSTOM_DARK_ON_SURFACE, 0xFFD8D8D8.toInt())
+    var themeCustomLightError by preference(Key.THEME_CUSTOM_LIGHT_ERROR, 0xFFCC0047.toInt())
+    var themeCustomDarkError by preference(Key.THEME_CUSTOM_DARK_ERROR, 0xFFEF8282.toInt())
 
     private var checkUpdatePrefs by preference(Key.CHECK_UPDATES, true)
     private var localePrefs by preference(Key.LOCALE, "")
     var doh by preference(Key.DOH, false)
-    var updateChannel by preference(Key.RELEASE_CHANNEL, Value.DEFAULT_CHANNEL)
+    var updateChannel by preference(Key.RELEASE_CHANNEL, Value.MBE_CHANNEL)
     var customChannelUrl by preference(Key.CUSTOM_CHANNEL, "")
     var downloadDir by preference(Key.DOWNLOAD_DIR, "")
     var randName by preference(Key.RAND_NAME, true)
+    var bottomBarStyle by preference(Key.BOTTOM_BAR_STYLE, 0)
+    var bottomBarOpacity by preference(Key.BOTTOM_BAR_OPACITY, 100)
+    internal var lastAppUpdateNotification by preference(Key.LAST_APP_UPDATE_NOTIFICATION, "")
+    internal var lastModuleUpdateNotification by preference(Key.LAST_MODULE_UPDATE_NOTIFICATION, "")
     var checkUpdate
         get() = checkUpdatePrefs
         set(value) {
@@ -136,7 +161,21 @@ object Config : PreferenceConfig, DBConfig {
 
     var suDefaultTimeout by preferenceStrInt(Key.SU_REQUEST_TIMEOUT, 10)
     var suAutoResponse by preferenceStrInt(Key.SU_AUTO_RESPONSE, Value.SU_PROMPT)
-    var suNotification by preferenceStrInt(Key.SU_NOTIFICATION, Value.NOTIFICATION_TOAST)
+    private var suNotificationPrefs by preferenceStrInt(
+        Key.SU_NOTIFICATION,
+        Value.NOTIFICATION_TOAST
+    )
+    var suNotification
+        get() = suNotificationPrefs.coerceIn(
+            Value.NO_NOTIFICATION,
+            Value.NOTIFICATION_STATUS_BAR
+        )
+        set(value) {
+            suNotificationPrefs = value.coerceIn(
+                Value.NO_NOTIFICATION,
+                Value.NOTIFICATION_STATUS_BAR
+            )
+        }
     var rootMode by dbSettings(Key.ROOT_ACCESS, Value.ROOT_ACCESS_APPS_AND_ADB)
     var suMntNamespaceMode by dbSettings(Key.SU_MNT_NS, Value.NAMESPACE_MODE_REQUESTER)
     var suMultiuserMode by dbSettings(Key.SU_MULTIUSER_MODE, Value.MULTIUSER_MODE_OWNER_ONLY)
@@ -152,6 +191,7 @@ object Config : PreferenceConfig, DBConfig {
 
     private const val SU_FINGERPRINT = "su_fingerprint"
     private const val UPDATE_CHANNEL = "update_channel"
+    val MBE_CHANNEL_URL: String get() = BuildConfig.UPDATE_URL
 
     fun toBundle(): Bundle {
         val map = prefs.all - Key.NO_MIGRATION
@@ -192,16 +232,13 @@ object Config : PreferenceConfig, DBConfig {
                 suBiometric = true
             remove(SU_FINGERPRINT)
 
-            // Migrate update_channel
-            prefs.getString(UPDATE_CHANNEL, null)?.let {
-                val channel = when (it.toInt()) {
-                    OldValue.STABLE_CHANNEL -> Value.STABLE_CHANNEL
-                    OldValue.CANARY_CHANNEL, OldValue.BETA_CHANNEL -> Value.BETA_CHANNEL
-                    OldValue.DEBUG_CHANNEL -> Value.DEBUG_CHANNEL
-                    OldValue.CUSTOM_CHANNEL -> Value.CUSTOM_CHANNEL
-                    else -> Value.DEFAULT_CHANNEL
-                }
+            prefs.getString(UPDATE_CHANNEL, null)?.toIntOrNull()?.let { oldChannel ->
+                val channel = if (oldChannel == 2) Value.CUSTOM_CHANNEL else Value.MBE_CHANNEL
                 putInt(Key.RELEASE_CHANNEL, channel)
+            }
+            val channel = prefs.getInt(Key.RELEASE_CHANNEL, Value.MBE_CHANNEL)
+            if (channel != Value.MBE_CHANNEL && channel != Value.CUSTOM_CHANNEL) {
+                putInt(Key.RELEASE_CHANNEL, Value.MBE_CHANNEL)
             }
             remove(UPDATE_CHANNEL)
         }

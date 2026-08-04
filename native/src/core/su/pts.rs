@@ -1,17 +1,15 @@
 use base::{FileOrStd, LibcReturn, LoggedResult, OsResult, ResultExt, libc, warn};
 use libc::{STDIN_FILENO, TIOCGWINSZ, TIOCSWINSZ, c_int, winsize};
-use nix::{
-    fcntl::{OFlag, SpliceFFlags},
-    poll::{PollFd, PollFlags, PollTimeout, poll},
-    sys::signal::{SigSet, Signal, raise},
-    sys::signalfd::{SfdFlags, SignalFd},
-    sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr},
-    unistd::pipe2,
-};
+use nix::fcntl::{OFlag, SpliceFFlags};
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+use nix::sys::signal::{SigSet, Signal, raise};
+use nix::sys::signalfd::{SfdFlags, SignalFd};
+use nix::sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr};
+use nix::unistd::pipe2;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::mem::MaybeUninit;
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static SHOULD_USE_SPLICE: AtomicBool = AtomicBool::new(true);
@@ -50,21 +48,25 @@ fn pump_via_copy(mut fd_in: &File, mut fd_out: &File) -> LoggedResult<()> {
     Ok(())
 }
 
-fn pump_via_splice(fd_in: &File, fd_out: &File, pipe: &(OwnedFd, OwnedFd)) -> LoggedResult<()> {
-    if !SHOULD_USE_SPLICE.load(Ordering::Acquire) {
+fn pump_via_splice(fd_in: &File, fd_out: &File, pipe: &(File, File)) -> LoggedResult<()> {
+    if !SHOULD_USE_SPLICE.load(Ordering::Relaxed) {
         return pump_via_copy(fd_in, fd_out);
     }
 
     // The pipe capacity is by default 16 pages, let's just use 65536
     let Ok(len) = splice(fd_in, &pipe.1, 65536) else {
         // If splice failed, stop using splice and fallback to userspace copy
-        SHOULD_USE_SPLICE.store(false, Ordering::Release);
+        SHOULD_USE_SPLICE.store(false, Ordering::Relaxed);
         return pump_via_copy(fd_in, fd_out);
     };
     if len == 0 {
         return Ok(());
     }
-    splice(&pipe.0, fd_out, len)?;
+    if splice(&pipe.0, fd_out, len).is_err() {
+        // If splice failed, stop using splice and fallback to userspace copy
+        SHOULD_USE_SPLICE.store(false, Ordering::Relaxed);
+        return pump_via_copy(&pipe.0, fd_out);
+    }
     Ok(())
 }
 
@@ -97,7 +99,6 @@ fn pump_tty_impl(ptmx: File, pump_stdin: bool) -> LoggedResult<()> {
     let mut signal_fd: Option<SignalFd> = None;
 
     let raw_ptmx = ptmx.as_raw_fd();
-    let mut raw_sig = -1;
 
     let mut poll_fds = Vec::with_capacity(3);
     poll_fds.push(PollFd::new(ptmx.as_fd(), PollFlags::POLLIN));
@@ -109,12 +110,14 @@ fn pump_tty_impl(ptmx: File, pump_stdin: bool) -> LoggedResult<()> {
             .check_os_err("pthread_sigmask", None, None)?;
         let sig = SignalFd::with_flags(&set, SfdFlags::SFD_CLOEXEC)
             .into_os_result("signalfd", None, None)?;
-        raw_sig = sig.as_raw_fd();
         signal_fd = Some(sig);
-        poll_fds.push(PollFd::new(
-            signal_fd.as_ref().unwrap().as_fd(),
-            PollFlags::POLLIN,
-        ));
+        unsafe {
+            // SAFETY: signal_fd is always Some
+            poll_fds.push(PollFd::new(
+                signal_fd.as_ref().unwrap_unchecked().as_fd(),
+                PollFlags::POLLIN,
+            ));
+        }
 
         // We also need to pump stdin to ptmx
         poll_fds.push(PollFd::new(
@@ -128,6 +131,7 @@ fn pump_tty_impl(ptmx: File, pump_stdin: bool) -> LoggedResult<()> {
 
     // Open a pipe to bypass userspace copy with splice
     let pipe_fd = pipe2(OFlag::O_CLOEXEC).into_os_result("pipe2", None, None)?;
+    let pipe_fd = (File::from(pipe_fd.0), File::from(pipe_fd.1));
 
     'poll: loop {
         // Wait for event
@@ -138,10 +142,12 @@ fn pump_tty_impl(ptmx: File, pump_stdin: bool) -> LoggedResult<()> {
                 if raw_fd == STDIN_FILENO {
                     pump_via_splice(FileOrStd::StdIn.as_file(), &ptmx, &pipe_fd)?;
                 } else if raw_fd == raw_ptmx {
-                    pump_via_splice(&ptmx, FileOrStd::StdIn.as_file(), &pipe_fd)?;
-                } else if raw_fd == raw_sig {
+                    pump_via_splice(&ptmx, FileOrStd::StdOut.as_file(), &pipe_fd)?;
+                } else if let Some(sig) = &signal_fd
+                    && raw_fd == sig.as_raw_fd()
+                {
                     sync_winsize(raw_ptmx);
-                    signal_fd.as_ref().unwrap().read_signal()?;
+                    sig.read_signal()?;
                 }
             } else if pfd
                 .revents()
